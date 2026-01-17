@@ -82,10 +82,13 @@ def generate_dashboard():
     # --- Prepare Registry Data ---
     enriched_registry = []
     providers = set()
+    provider_counts = Counter()
+    tag_counts = Counter()
     
     for entry in registry_data:
         p = entry.get("provider", "Unknown")
         providers.add(p)
+        provider_counts[p] += 1
         
         fields = entry.get("fields", {})
         pricing = fields.get("pricing", {}).get("value", {})
@@ -98,7 +101,10 @@ def generate_dashboard():
         
         entry['history_input'] = generate_mock_history(inp)
         entry['history_output'] = generate_mock_history(out)
-        entry['tags'] = get_capabilities(entry.get("model", ""))
+        tags = get_capabilities(entry.get("model", ""))
+        entry['tags'] = tags
+        for t in tags: tag_counts[t] += 1
+        
         entry['change_24h'] = change_pct
         enriched_registry.append(entry)
 
@@ -110,6 +116,44 @@ def generate_dashboard():
     # Stats
     avg_input = sum(safe_float(e['fields']['pricing']['value'].get('input',0)) for e in enriched_registry) / len(enriched_registry) if enriched_registry else 0
     avg_output = sum(safe_float(e['fields']['pricing']['value'].get('output',0)) for e in enriched_registry) / len(enriched_registry) if enriched_registry else 0
+
+    # Data for Charts
+    # 1. Scatter (Input vs Output)
+    scatter_data = [] # [[input, output, modelName, provider], ...]
+    for m in enriched_registry:
+        scatter_data.append([
+            safe_float(m['fields']['pricing']['value'].get('input',0)),
+            safe_float(m['fields']['pricing']['value'].get('output',0)),
+            m.get('model'),
+            m.get('provider')
+        ])
+        
+    # 2. Pie (Provider Share)
+    pie_data = [{"name": k, "value": v} for k, v in provider_counts.items()]
+    pie_data.sort(key=lambda x: x['value'], reverse=True)
+    
+    # 3. Radar (Capabilities)
+    # Normalize tag counts for radar
+    all_tags = sorted(list(tag_counts.keys()))
+    radar_indicator = [{"name": t, "max": max(tag_counts.values()) + 5} for t in all_tags]
+    radar_values = [tag_counts[t] for t in all_tags]
+    # Metadata for Info Modal
+    # In a real scenario, we would check the max(last_updated) from items
+    # For this static generator, we assume the report generation time reflects the latest state
+    latest_ts = datetime.now()
+        
+    time_diff = datetime.now() - latest_ts
+    if time_diff < timedelta(hours=1):
+        status_color = "var(--success)"
+        status_text = "ONLINE"
+    elif time_diff < timedelta(hours=24):
+        status_color = "#f59e0b" # Orange
+        status_text = "DELAYED"
+    else:
+        status_color = "var(--danger)"
+        status_text = "OFFLINE"
+
+    last_updated_str = latest_ts.strftime("%Y-%m-%d %H:%M:%S")
 
     # --- HTML Generator ---
     html = f"""
@@ -124,7 +168,7 @@ def generate_dashboard():
     <style>
         :root {{
             --bg-body: #09090b;
-            --bg-panel: #121214;
+            --bg-panel: #141417; /* Slightly lighter for contrast */
             --bg-card: #1c1c1f;
             --border: #27272a;
             --primary: #3b82f6; 
@@ -133,105 +177,117 @@ def generate_dashboard():
             --danger: #ef4444;
             --text-main: #e4e4e7;
             --text-muted: #a1a1aa;
+            --font-main: 'Inter', sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
         }}
         
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ background: var(--bg-body); color: var(--text-main); font-family: 'Inter', sans-serif; height: 100vh; overflow: hidden; display: grid; grid-template-rows: 50px 1fr 30px; }}
+        body {{ background: var(--bg-body); color: var(--text-main); font-family: var(--font-main); height: 100vh; overflow: hidden; display: grid; grid-template-rows: 60px 1fr 30px; }}
         
         /* HEADER */
-        header {{ background: var(--bg-panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 1.5rem; }}
-        .brand {{ font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.1rem; color: #fff; display: flex; align-items: center; gap: 8px; }}
+        header {{ background: var(--bg-panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; }}
+        .brand {{ font-family: var(--font-mono); font-weight: 700; font-size: 1.2rem; color: #fff; display: flex; align-items: center; gap: 10px; letter-spacing: -0.5px; }}
         .brand span {{ color: var(--primary); }}
         
-        .tabs {{ display: flex; gap: 5px; background: #1a1a1d; padding: 3px; border-radius: 6px; }}
+        .tabs {{ display: flex; gap: 8px; background: #1a1a1d; padding: 4px; border-radius: 8px; border: 1px solid var(--border); }}
         .tab-btn {{
-            padding: 6px 16px; border: none; background: transparent; color: var(--text-muted);
-            font-size: 0.85rem; font-weight: 600; cursor: pointer; border-radius: 4px; transition: 0.2s;
+            padding: 8px 20px; border: none; background: transparent; color: var(--text-muted);
+            font-size: 0.9rem; font-weight: 600; cursor: pointer; border-radius: 6px; transition: 0.2s;
+            font-family: var(--font-main);
         }}
-        .tab-btn.active {{ background: #2f3035; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }}
+        .tab-btn:hover {{ color: #fff; background: rgba(255,255,255,0.05); }}
+        .tab-btn.active {{ background: #2f3035; color: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); }}
         
         /* LAYOUTS */
-        .view-section {{ display: none; height: 100%; padding: 1rem; overflow-y: auto; }}
+        .view-section {{ display: none; height: 100%; padding: 1.5rem; overflow-y: auto; }}
         .view-section.active {{ display: grid; }}
         
         /* HOME VIEW */
-        #home-view {{ grid-template-columns: 260px 1fr 300px; grid-template-rows: 250px 1fr; gap: 1rem; }}
+        #home-view {{ grid-template-columns: 300px 1fr 350px; grid-template-rows: auto 1fr; gap: 1.5rem; align-content: start; }}
         
         /* GAINERS VIEW */
-        #gainers-view {{ grid-template-columns: 1fr 1fr; gap: 1rem; grid-template-rows: 1fr; }}
+        #gainers-view {{ grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start; max-width: 1400px; margin: 0 auto; width: 100%; }}
         
         /* TRENDING VIEW */
-        #trending-view {{ grid-template-columns: 1fr; }}
+        #trending-view {{ grid-template-columns: 1fr; max-width: 1200px; margin: 0 auto; width: 100%; }}
 
         /* PANELS */
-        .panel {{ background: var(--bg-panel); border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }}
-        .panel-head {{ padding: 12px 16px; border-bottom: 1px solid var(--border); font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; align-items: center; }}
-        .panel-body {{ padding: 10px; flex: 1; overflow: auto; position: relative; }}
+        .panel {{ background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); }}
+        .panel-head {{ padding: 16px 20px; border-bottom: 1px solid var(--border); font-size: 0.85rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.02); }}
+        .panel-body {{ padding: 1px; flex: 1; overflow: auto; position: relative; min-height: 200px; }}
         
         /* TABLES */
-        table {{ width: 100%; border-collapse: collapse; font-size: 0.85rem; }}
-        th {{ text-align: left; padding: 10px; color: var(--text-muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-panel); font-weight: 500; font-size: 0.75rem; }}
-        td {{ padding: 10px; border-bottom: 1px solid var(--border); color: #dedede; }}
+        table {{ width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.9rem; }}
+        th {{ text-align: left; padding: 16px 20px; color: var(--text-muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg-panel); font-weight: 500; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; z-index: 10; }}
+        td {{ padding: 14px 20px; border-bottom: 1px solid var(--border); color: #dedede; vertical-align: middle; }}
+        tr:last-child td {{ border-bottom: none; }}
         tr:hover {{ background: rgba(255,255,255,0.03); cursor: pointer; }}
         
-        .num-up {{ color: var(--success); font-family: 'JetBrains Mono'; }}
-        .num-down {{ color: var(--danger); font-family: 'JetBrains Mono'; }}
-        .tag {{ font-size: 0.7rem; padding: 2px 6px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-right: 4px; color: #ccc; }}
+        .num-up {{ color: var(--success); font-family: var(--font-mono); }}
+        .num-down {{ color: var(--danger); font-family: var(--font-mono); }}
+        .tag {{ font-size: 0.7rem; padding: 4px 8px; background: rgba(59, 130, 246, 0.15); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 4px; margin-right: 6px; color: #93c5fd; font-weight: 500; }}
         
-        /* SEARCH */
-        input.search {{ background: #000; border: 1px solid var(--border); color: #fff; padding: 6px 10px; border-radius: 4px; outline: none; font-size: 0.8rem; width: 200px; }}
+        /* SEARCH & FILTER */
+        .filters {{ display: flex; gap: 10px; }}
+        input.search, select {{ 
+            background: #000; border: 1px solid var(--border); color: #fff; padding: 8px 12px; border-radius: 6px; outline: none; font-size: 0.85rem; 
+            transition: all 0.2s ease; font-family: var(--font-main);
+        }}
+        input.search:focus, select:focus {{ border-color: var(--primary); box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2); }}
         
         /* KPI BOXES */
-        .kpi-grid {{ display: grid; gap: 10px; }}
-        .kpi-box {{ background: var(--bg-card); padding: 15px; border-radius: 6px; border-left: 3px solid var(--primary); }}
-        .kpi-val {{ font-size: 1.4rem; font-weight: 700; color: #fff; margin: 4px 0; }}
-        .kpi-lbl {{ font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; }}
+        .kpi-grid {{ display: grid; gap: 15px; }}
+        .kpi-box {{ background: var(--bg-panel); padding: 20px; border-radius: 12px; border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: center; position: relative; overflow: hidden; }}
+        .kpi-box::before {{ content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--primary); }}
+        .kpi-val {{ font-size: 1.8rem; font-weight: 700; color: #fff; margin: 8px 0; font-family: var(--font-mono); letter-spacing: -1px; }}
+        .kpi-lbl {{ font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; }}
 
         /* GAINER CARDS */
-        .gainer-card {{ background: var(--bg-card); padding: 15px; margin-bottom: 10px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; border: 1px solid var(--border); }}
-        .gainer-info h4 {{ font-size: 1rem; color: #fff; }}
-        .gainer-info span {{ font-size: 0.8rem; color: var(--text-muted); }}
-        .gainer-pct {{ font-size: 1.1rem; font-weight: 700; padding: 5px 10px; border-radius: 4px; background: rgba(16, 185, 129, 0.1); }}
+        .gainer-card {{ 
+            background: var(--bg-panel); padding: 20px; margin-bottom: 15px; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; 
+            border: 1px solid var(--border); transition: transform 0.2s; 
+        }}
+        .gainer-card:hover {{ transform: translateY(-2px); border-color: #444; }}
+        .gainer-info h4 {{ font-size: 1.1rem; color: #fff; margin-bottom: 4px; }}
+        .gainer-info span {{ font-size: 0.85rem; color: var(--text-muted); }}
+        .gainer-pct {{ font-size: 1.2rem; font-weight: 700; padding: 6px 12px; border-radius: 6px; background: rgba(16, 185, 129, 0.1); }}
 
         /* MARQUEE */
-        .marquee-container {{ background: #000; border-top: 1px solid var(--border); overflow: hidden; display: flex; align-items: center; position: relative; }}
-        .marquee {{ display: flex; gap: 2rem; animation: scroll 40s linear infinite; white-space: nowrap; padding-left: 100vw; }}
-        .m-item {{ font-family: 'JetBrains Mono'; font-size: 0.75rem; color: #888; display: flex; gap: 8px; }}
+        .marquee-container {{ background: #000; border-top: 1px solid var(--border); overflow: hidden; display: flex; align-items: center; position: relative; z-index: 100; }}
+        .marquee {{ display: flex; gap: 3rem; animation: scroll 60s linear infinite; white-space: nowrap; padding-left: 100vw; }}
+        .m-item {{ font-family: var(--font-mono); font-size: 0.8rem; color: #888; display: flex; gap: 10px; align-items: center; }}
         .m-val {{ color: var(--success); }}
         @keyframes scroll {{ 0% {{ transform: translateX(0); }} 100% {{ transform: translateX(-100%); }} }}
+        .marquee:hover {{ animation-play-state: paused; }}
 
         /* MODAL */
-        .modal-overlay {{ position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); backdrop-filter: blur(5px); z-index: 999; display: none; justify-content: center; align-items: center; }}
-        .modal {{ width: 850px; height: 600px; background: #18181b; border: 1px solid var(--border); border-radius: 12px; display: grid; grid-template-rows: 60px 1fr; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); overflow: hidden; }}
-        .m-head {{ padding: 0 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: #202024;}}
-        .m-body {{ padding: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; overflow-y: auto; }}
-        .close {{ cursor: pointer; color: #aaa; font-size: 1.5rem; transition: 0.2s; }} .close:hover {{ color: #fff; }}
+        .modal-overlay {{ position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); backdrop-filter: blur(8px); z-index: 999; display: none; justify-content: center; align-items: center; opacity: 0; transition: opacity 0.2s; }}
+        .modal-overlay.open {{ opacity: 1; }}
+        .modal {{ width: 900px; height: 650px; background: #18181b; border: 1px solid var(--border); border-radius: 16px; display: grid; grid-template-rows: 70px 1fr; box-shadow: 0 50px 100px -20px rgba(0,0,0,0.7); overflow: hidden; transform: scale(0.95); transition: transform 0.2s; }}
+        .modal-overlay.open .modal {{ transform: scale(1); }}
+        .m-head {{ padding: 0 30px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: #202024;}}
+        .m-body {{ padding: 30px; display: grid; grid-template-columns: 1.2fr 0.8fr; gap: 30px; overflow-y: auto; }}
+        .close {{ cursor: pointer; color: #aaa; font-size: 1.8rem; transition: 0.2s; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border-radius: 50%; }} 
+        .close:hover {{ color: #fff; background: rgba(255,255,255,0.1); }}
         
         /* UI REFINEMENTS */
         .panel-body::-webkit-scrollbar {{ display: none; }}
         .panel-body {{ -ms-overflow-style: none; scrollbar-width: none; }}
         
-        select, input.search, .tab-btn {{
-            border-radius: 20px !important;
-            padding: 8px 16px !important;
-            border: 1px solid #333 !important;
-            transition: all 0.2s ease;
-        }}
-        select:hover, input.search:focus, .tab-btn:hover {{
-            border-color: var(--primary) !important;
-            box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
-        }}
-
-        /* CHART GRID - 3 Columns */
+        /* CHART GRID */
         .chart-row {{
+            grid-column: 1 / -1;
             display: grid;
-            grid-template-columns: 1fr 0.8fr 1fr;
-            gap: 1rem;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 1.5rem;
+            min-height: 320px;
+        }}
+        
+        .chart-container {{
+            width: 100%;
+            height: 100%;
             min-height: 280px;
         }}
-
-        /* PROVIDER BAR (Compact) */
-        #barChart {{ height: 100%; width: 100%; }}
 
     </style>
 </head>
@@ -239,7 +295,7 @@ def generate_dashboard():
 
     <header>
         <div class="brand">
-            <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+            <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
             LLM<span>ATLAS</span>
         </div>
         
@@ -249,15 +305,22 @@ def generate_dashboard():
             <button class="tab-btn" onclick="switchView('trending')">LEADERBOARD</button>
         </div>
 
-        <div style="font-size:0.8rem; color:var(--text-muted)">
-            <span style="color:var(--success)">● ONLINE</span>
+        <div style="display:flex; align-items:center; gap:16px;">
+            <div style="font-size:0.85rem; color:var(--text-muted); display:flex; align-items:center; gap:8px;">
+                <div style="width:8px; height:8px; background:{status_color}; border-radius:50%; box-shadow:0 0 8px {status_color};"></div>
+                <span style="color:#fff; font-weight:600;">{status_text}</span>
+            </div>
+            <div onclick="openInfoModal()" style="cursor:pointer; color:var(--text-muted); transition:0.2s;" onmouseover="this.style.color='#fff'" onmouseout="this.style.color='var(--text-muted)'">
+                <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            </div>
         </div>
     </header>
 
     <!-- HOME VIEW -->
-    <main id="home-view" class="view-section active" style="grid-template-rows: auto auto 1fr;">
-        <!-- Stats -->
-        <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 1rem;">
+    <main id="home-view" class="view-section active">
+        
+        <!-- ROW 1: STATS & CHARTS -->
+        <div class="kpi-grid" style="grid-column: 1; align-self: start;">
             <div class="kpi-box">
                 <div class="kpi-lbl">Total Index</div>
                 <div class="kpi-val">{len(registry_data)}</div>
@@ -270,40 +333,26 @@ def generate_dashboard():
                 <div class="kpi-lbl">Avg Output (1M)</div>
                 <div class="kpi-val">${avg_output:.3f}</div>
             </div>
-        </div>
-
-        <!-- Charts Section (3 Columns) -->
-        <div class="chart-row" style="margin-bottom: 1rem;">
-            <!-- 1. Price Distribution -->
-            <div class="panel">
-                <div class="panel-head">Price Correlation</div>
-                <div class="panel-body" id="scatterChart"></div>
-            </div>
             
-            <!-- 2. Provider Share (Pie) -->
-            <div class="panel">
+            <div class="panel" style="margin-top: 10px; height: 350px;">
                 <div class="panel-head">Provider Share</div>
-                <div class="panel-body" id="pieChart"></div>
-            </div>
-
-            <!-- 3. Capabilities (Radar) -->
-            <div class="panel">
-                <div class="panel-head">Capabilities Radar</div>
-                <div class="panel-body" id="radarChart"></div>
+                <div class="panel-body">
+                     <div id="pieChart" class="chart-container"></div>
+                </div>
             </div>
         </div>
 
-        <!-- Registry Table -->
-        <div class="panel" style="grid-column: 1 / -1;">
+        <!-- MAIN TABLE (Middle Column) -->
+        <div class="panel" style="grid-column: 2;">
             <div class="panel-head">
                 <span>Real-Time Registry</span>
-                <div style="display:flex; gap:10px;">
-                    <select id="providerFilter" onchange="applyFilters()" style="background:#000; color:#fff; border:1px solid var(--border); padding:6px; border-radius:4px; outline:none; font-size:0.8rem;">
+                <div class="filters">
+                    <select id="providerFilter" onchange="applyFilters()">
                         <option value="all">All Providers</option>
                         { "".join([f'<option value="{p}">{p}</option>' for p in sorted(list(providers))]) }
                     </select>
                     
-                    <select id="sortFilter" onchange="applyFilters()" style="background:#000; color:#fff; border:1px solid var(--border); padding:6px; border-radius:4px; outline:none; font-size:0.8rem;">
+                    <select id="sortFilter" onchange="applyFilters()">
                         <option value="name">Sort by Name</option>
                         <option value="price_high">Price: High to Low</option>
                         <option value="price_low">Price: Low to High</option>
@@ -319,10 +368,9 @@ def generate_dashboard():
                         <tr>
                             <th>MODEL</th>
                             <th>PROVIDER</th>
-                            <th>TAGS</th>
                             <th>INPUT / 1M</th>
                             <th>OUTPUT / 1M</th>
-                            <th>24H %</th>
+                            <th style="text-align:right">24H %</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -344,12 +392,14 @@ def generate_dashboard():
         
         html += f"""
                         <tr onclick="openModal('{name}')">
-                            <td style="font-weight:600; color:#fff">{name}</td>
+                            <td style="font-weight:600; color:#fff">
+                                <div>{name}</div>
+                                <div style="margin-top:4px; display:flex;">{tags_html}</div>
+                            </td>
                             <td>{mod.get('provider')}</td>
-                            <td>{tags_html}</td>
-                            <td style="font-family:'JetBrains Mono'">${inp:.4f}</td>
-                            <td style="font-family:'JetBrains Mono'">${out:.4f}</td>
-                            <td class="{color_class}">{arrow} {abs(chg):.2f}%</td>
+                            <td style="font-family:var(--font-mono)">${inp:.4f}</td>
+                            <td style="font-family:var(--font-mono)">${out:.4f}</td>
+                            <td class="{color_class}" style="text-align:right">{arrow} {abs(chg):.2f}%</td>
                         </tr>
         """
 
@@ -358,13 +408,32 @@ def generate_dashboard():
                 </table>
             </div>
         </div>
+
+        <!-- RIGHT COLUMN: CHARTS -->
+        <div style="grid-column: 3; display: flex; flex-direction: column; gap: 1.5rem;">
+            
+            <div class="panel" style="flex: 1;">
+                <div class="panel-head">Price Correlation</div>
+                <div class="panel-body">
+                    <div id="scatterChart" class="chart-container"></div>
+                </div>
+            </div>
+            
+            <div class="panel" style="flex: 1;">
+                 <div class="panel-head">Capabilities Radar</div>
+                 <div class="panel-body">
+                      <div id="radarChart" class="chart-container"></div>
+                 </div>
+            </div>
+
+        </div>
     </main>
 
     <!-- GAINERS VIEW -->
     <main id="gainers-view" class="view-section">
         <div class="panel">
             <div class="panel-head" style="color:var(--success)">Top Gainers (24h)</div>
-            <div class="panel-body">
+            <div class="panel-body" style="padding: 20px;">
     """
     
     for g in top_gainers:
@@ -372,10 +441,10 @@ def generate_dashboard():
          pct = g['change_24h']
          price = g['fields']['pricing']['value'].get('input', 0)
          html += f"""
-                <div class="gainer-card" style="border-left: 3px solid var(--success)">
+                <div class="gainer-card" style="border-left: 4px solid var(--success)">
                     <div class="gainer-info">
                         <h4>{name}</h4>
-                        <span>{g.get('provider')} • ${price:.4f}</span>
+                        <span>{g.get('provider')} • <span style="font-family:var(--font-mono)">${price:.4f}</span></span>
                     </div>
                     <div class="gainer-pct num-up">+{pct:.2f}%</div>
                 </div>
@@ -386,17 +455,17 @@ def generate_dashboard():
         </div>
         <div class="panel">
             <div class="panel-head" style="color:var(--danger)">Top Losers (24h)</div>
-            <div class="panel-body">
+            <div class="panel-body" style="padding: 20px;">
     """
     for l in top_losers:
          name = l.get('model')
          pct = l['change_24h']
          price = l['fields']['pricing']['value'].get('input', 0)
          html += f"""
-                <div class="gainer-card" style="border-left: 3px solid var(--danger)">
+                <div class="gainer-card" style="border-left: 4px solid var(--danger)">
                     <div class="gainer-info">
                         <h4>{name}</h4>
-                        <span>{l.get('provider')} • ${price:.4f}</span>
+                        <span>{l.get('provider')} • <span style="font-family:var(--font-mono)">${price:.4f}</span></span>
                     </div>
                     <div class="gainer-pct num-down">{pct:.2f}%</div>
                 </div>
@@ -412,13 +481,13 @@ def generate_dashboard():
         <div class="panel">
             <div class="panel-head">
                 <span>LMSYS Chatbot Arena Leaderboard</span>
-                <span style="font-size:0.7rem; background:var(--primary); color:#fff; padding:2px 8px; border-radius:10px;">LIVE SCRAPE</span>
+                <span style="font-size:0.75rem; background:var(--primary); color:#fff; padding:4px 10px; border-radius:12px; font-weight:700;">LIVE SCRAPE</span>
             </div>
             <div class="panel-body" style="padding:0">
                 <table id="leaderboardTable">
                     <thead>
                         <tr>
-                            <th>RANK</th>
+                            <th style="width:80px; text-align:center;">RANK</th>
                             <th>MODEL</th>
                             <th>ARENA SCORE</th>
                             <th>95% CI</th>
@@ -429,16 +498,16 @@ def generate_dashboard():
     """
     
     if not leaderboard_data:
-        html += '<tr><td colspan="5" style="text-align:center; padding:20px;">No leaderboard data available. Run ingestion.</td></tr>'
+        html += '<tr><td colspan="5" style="text-align:center; padding:40px; color:var(--text-muted); font-style:italic;">No leaderboard data available. Run ingestion.</td></tr>'
     
     for row in leaderboard_data:
         html += f"""
                         <tr>
-                            <td style="font-weight:bold; color:var(--primary)">#{row.get('rank')}</td>
+                            <td style="font-weight:800; color:var(--primary); font-size:1.1rem; text-align:center;">#{row.get('rank')}</td>
                             <td style="color:#fff; font-weight:600;">{row.get('model')}</td>
-                            <td style="font-family:'JetBrains Mono'">{row.get('arena_score')}</td>
+                            <td style="font-family:var(--font-mono)">{row.get('arena_score')}</td>
                             <td style="color:var(--text-muted)">{row.get('ci_95')}</td>
-                            <td><span class="tag">{row.get('category')}</span></td>
+                            <td><span class="tag" style="color:#fff; border-color:#fff;">{row.get('category')}</span></td>
                         </tr>
         """
 
@@ -458,7 +527,7 @@ def generate_dashboard():
     for m in enriched_registry[:20]:
          html += f"""
             <div class="m-item">
-                <span>{m.get('model')}</span>
+                <span style="font-weight:700; color:#fff;">{m.get('model')}</span>
                 <span class="m-val">${safe_float(m['fields']['pricing']['value'].get('input')):.4f}</span>
             </div>
          """
@@ -467,45 +536,74 @@ def generate_dashboard():
         </div>
     </div>
 
+    <!-- INFO MODAL -->
+    <div class="modal-overlay" id="infoModalOverlay" onclick="clickOutsideInfo(event)">
+        <div class="modal" style="height: auto; width: 400px; grid-template-rows: auto;">
+             <div class="m-head" style="padding: 15px 24px;">
+                <h2 style="color:#fff; font-size:1.1rem;">System Metadata</h2>
+                <div class="close" onclick="closeInfoModal()">×</div>
+             </div>
+             <div class="m-body" style="padding: 24px; display:block;">
+                <div style="margin-bottom:15px;">
+                    <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Pipeline Status</div>
+                    <div style="color:{status_color}; font-weight:bold; font-size:1.1rem;">{status_text}</div>
+                    <div style="font-size:0.75rem; color:#666; margin-top:2px;">Based on latest data recency</div>
+                </div>
+                <div style="margin-bottom:15px;">
+                     <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Last Data Update</div>
+                     <div style="color:#fff; font-size:1rem; font-family:var(--font-mono);">{last_updated_str}</div>
+                </div>
+                <div style="margin-bottom:15px;">
+                     <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Total Models Indexed</div>
+                     <div style="color:#fff; font-size:1rem; font-family:var(--font-mono);">{len(registry_data)}</div>
+                </div>
+                <div>
+                     <div style="font-size:0.8rem; color:var(--text-muted); text-transform:uppercase;">Report Generated</div>
+                     <div style="color:#fff; font-size:1rem; font-family:var(--font-mono);">{timestamp}</div>
+                </div>
+             </div>
+        </div>
+    </div>
+
     <!-- DETAILS MODAL -->
     <div class="modal-overlay" id="modalOverlay" onclick="clickOutside(event)">
         <div class="modal">
             <div class="m-head">
                 <div>
-                    <h2 id="mName" style="color:#fff; font-size:1.2rem;">Model Name</h2>
-                    <span id="mProvider" style="color:var(--primary); font-size:0.9rem;">Provider</span>
+                    <h2 id="mName" style="color:#fff; font-size:1.5rem; letter-spacing:-0.5px;">Model Name</h2>
+                    <span id="mProvider" style="color:var(--primary); font-size:0.95rem; font-weight:500;">Provider</span>
                 </div>
                 <div class="close" onclick="closeModal()">×</div>
             </div>
             <div class="m-body">
                 <div>
-                    <h3 style="color:#888; text-transform:uppercase; font-size:0.8rem; margin-bottom:10px;">Price Analytics</h3>
-                    <div id="historyChart" style="width:100%; height:200px; background:rgba(0,0,0,0.2); border-radius:6px; margin-bottom:20px;"></div>
+                    <h3 style="color:var(--text-muted); text-transform:uppercase; font-size:0.8rem; margin-bottom:15px; font-weight:700; letter-spacing:1px;">Price History</h3>
+                    <div id="historyChart" style="width:100%; height:250px; background:rgba(0,0,0,0.2); border-radius:12px; margin-bottom:25px; border:1px solid var(--border);"></div>
                     
-                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
-                        <div style="background:#202024; padding:10px; border-radius:6px;">
-                            <div style="font-size:0.7rem; color:#888;">INPUT (1M)</div>
-                            <div id="mInput" style="font-size:1.1rem; color: #fff;">$0.00</div>
+                    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
+                        <div style="background:#202024; padding:15px; border-radius:8px; border:1px solid var(--border);">
+                            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase;">INPUT (1M)</div>
+                            <div id="mInput" style="font-size:1.4rem; color: #fff; font-family:var(--font-mono); margin-top:5px;">$0.00</div>
                         </div>
-                        <div style="background:#202024; padding:10px; border-radius:6px;">
-                            <div style="font-size:0.7rem; color:#888;">OUTPUT (1M)</div>
-                            <div id="mOutput" style="font-size:1.1rem; color: #fff;">$0.00</div>
+                        <div style="background:#202024; padding:15px; border-radius:8px; border:1px solid var(--border);">
+                            <div style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase;">OUTPUT (1M)</div>
+                            <div id="mOutput" style="font-size:1.4rem; color: #fff; font-family:var(--font-mono); margin-top:5px;">$0.00</div>
                         </div>
                     </div>
                 </div>
                 <div>
-                     <h3 style="color:#888; text-transform:uppercase; font-size:0.8rem; margin-bottom:10px;">Capabilities</h3>
-                     <div id="mTags" style="display:flex; flex-wrap:wrap; gap:5px; margin-bottom:20px;"></div>
+                     <h3 style="color:var(--text-muted); text-transform:uppercase; font-size:0.8rem; margin-bottom:15px; font-weight:700; letter-spacing:1px;">Capabilities</h3>
+                     <div id="mTags" style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:30px;"></div>
                      
-                     <h3 style="color:#888; text-transform:uppercase; font-size:0.8rem; margin-bottom:10px;">Technical Specs</h3>
-                     <div style="background:#202024; padding:15px; border-radius:6px;">
-                        <div style="display:flex; justify-content:space-between; margin-bottom:8px; border-bottom:1px solid #333; padding-bottom:8px;">
+                     <h3 style="color:var(--text-muted); text-transform:uppercase; font-size:0.8rem; margin-bottom:15px; font-weight:700; letter-spacing:1px;">Specs</h3>
+                     <div style="background:#202024; padding:20px; border-radius:8px; border:1px solid var(--border);">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:12px; border-bottom:1px solid #333; padding-bottom:12px;">
                             <span style="color:#aaa; font-size:0.9rem;">Context Window</span>
-                            <span id="mCtx" style="color:#fff;">-</span>
+                            <span id="mCtx" style="color:#fff; font-weight:600;">-</span>
                         </div>
                         <div style="display:flex; justify-content:space-between; padding-top:5px;">
                             <span style="color:#aaa; font-size:0.9rem;">24h Trend</span>
-                            <span id="mTrend" style="color:#fff;">-</span>
+                            <span id="mTrend" style="color:#fff; font-weight:600;">-</span>
                         </div>
                      </div>
                 </div>
@@ -515,18 +613,21 @@ def generate_dashboard():
 
     <script>
         const modelsDB = {json.dumps(js_models_db)};
-        let chartInstance = null;
+        let chartInstances = {{}};
 
         // --- Tabs ---
         function switchView(viewId) {{
+            // Hide all
             document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            // Show selected
             document.getElementById(viewId + '-view').classList.add('active');
             
+            // Buttons
             document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
             event.target.classList.add('active');
             
-            // Resize charts if needed
-            if(chartInstance) chartInstance.resize();
+            // Resize charts
+            Object.values(chartInstances).forEach(chart => chart.resize());
         }}
 
         // --- Modal ---
@@ -549,21 +650,24 @@ def generate_dashboard():
             trendEl.style.color = trend >= 0 ? 'var(--success)' : 'var(--danger)';
             
             const tagsDiv = document.getElementById('mTags');
-            tagsDiv.innerHTML = data.tags.map(t => `<span class="tag" style="padding:5px 10px; font-size:0.8rem;">${{t}}</span>`).join('');
+            tagsDiv.innerHTML = data.tags.map(t => `<span class="tag" style="padding:6px 12px; font-size:0.85rem;">${{t}}</span>`).join('');
 
-            document.getElementById('modalOverlay').style.display = 'flex';
+            const overlay = document.getElementById('modalOverlay');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('open'), 10); // Transitions
             
             // Render History Chart
             setTimeout(() => {{
-                if(chartInstance) chartInstance.dispose();
-                chartInstance = echarts.init(document.getElementById('historyChart'));
+                if(chartInstances['history']) chartInstances['history'].dispose();
+                const chart = echarts.init(document.getElementById('historyChart'));
+                chartInstances['history'] = chart;
                 
                 const dates = data.history_input.map(x => x.date);
                 const vals = data.history_input.map(x => x.price);
                 
-                chartInstance.setOption({{
+                chart.setOption({{
                     backgroundColor: 'transparent',
-                    tooltip: {{ trigger: 'axis' }},
+                    tooltip: {{ trigger: 'axis', formatter: '{{b}}<br>${{c}}' }},
                     grid: {{ top: 10, right: 10, bottom: 20, left: 50 }},
                     xAxis: {{ type: 'category', data: dates, show: false }},
                     yAxis: {{ type: 'value', splitLine: {{ lineStyle: {{ color: '#333' }} }} }},
@@ -574,36 +678,127 @@ def generate_dashboard():
                         symbol: 'none'
                     }}]
                 }});
-            }}, 50);
+            }}, 200);
         }}
 
         function closeModal() {{
-             document.getElementById('modalOverlay').style.display = 'none';
+             const overlay = document.getElementById('modalOverlay');
+             overlay.classList.remove('open');
+             setTimeout(() => overlay.style.display = 'none', 200);
         }}
         
         function clickOutside(e) {{
             if (e.target.id === 'modalOverlay') closeModal();
         }}
 
+        // --- Info Modal ---
+        function openInfoModal() {{
+            const overlay = document.getElementById('infoModalOverlay');
+            overlay.style.display = 'flex';
+            setTimeout(() => overlay.classList.add('open'), 10);
+        }}
+        function closeInfoModal() {{
+             const overlay = document.getElementById('infoModalOverlay');
+             overlay.classList.remove('open');
+             setTimeout(() => overlay.style.display = 'none', 200);
+        }}
+        function clickOutsideInfo(e) {{
+            if (e.target.id === 'infoModalOverlay') closeInfoModal();
+        }}
+
         // --- Filter ---
-        function filterTable(input, tableId) {{
-            const term = input.value.toLowerCase();
-            const rows = document.querySelectorAll('#' + tableId + ' tbody tr');
-            rows.forEach(r => {{
-                r.style.display = r.innerText.toLowerCase().includes(term) ? '' : 'none';
-            }});
+        function applyFilters() {{
+             const provider = document.getElementById('providerFilter').value;
+             const sort = document.getElementById('sortFilter').value;
+             const search = document.getElementById('searchInput').value.toLowerCase();
+             
+             const tbody = document.querySelector('#regTable tbody');
+             const rows = Array.from(tbody.querySelectorAll('tr'));
+             
+             rows.forEach(row => {{
+                 let show = true;
+                 const modelName = row.querySelector('td:nth-child(1)').innerText.toLowerCase();
+                 const rowProvider = row.querySelector('td:nth-child(2)').innerText;
+                 
+                 if(provider !== 'all' && rowProvider !== provider) show = false;
+                 if(search && !modelName.includes(search)) show = false;
+                 
+                 row.style.display = show ? '' : 'none';
+             }});
+             
+             // Sorting Logic could be implemented here by re-appending rows
         }}
 
         // --- Init Dashboard Charts ---
         const themeColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#ec4899'];
+        const textStyle = {{ fontFamily: 'Inter, sans-serif' }};
         
         // 1. Scatter (Price)
-        const scatterData = {json.dumps([[
-            safe_float(m['fields']['pricing']['value'].get('input',0)),
-            safe_float(m['fields']['pricing']['value'].get('output',0))
-        ] for m in enriched_registry])};
-
+        const scatterData = {json.dumps(scatter_data)};
         const scChart = echarts.init(document.getElementById('scatterChart'));
+        chartInstances['scatter'] = scChart;
+        scChart.setOption({{
+            tooltip: {{
+                formatter: function (param) {{
+                    return '<b>' + param.data[2] + '</b><br>' + param.data[3] + '<br>Input: $' + param.data[0] + '<br>Output: $' + param.data[1];
+                }} 
+            }},
+            grid: {{ top: 30, right: 30, bottom: 30, left: 50 }},
+            xAxis: {{ name: 'Input', type: 'value', splitLine: {{ lineStyle: {{ color: '#333' }} }} }},
+            yAxis: {{ name: 'Output', type: 'value', splitLine: {{ lineStyle: {{ color: '#333' }} }} }},
+            series: [{{
+                symbolSize: 10,
+                data: scatterData,
+                type: 'scatter',
+                itemStyle: {{ color: '#3b82f6', opacity: 0.8 }}
+            }}]
+        }});
+
+        // 2. Pie (Provider Share)
+        const pieData = {json.dumps(pie_data)};
+        const piChart = echarts.init(document.getElementById('pieChart'));
+        chartInstances['pie'] = piChart;
+        piChart.setOption({{
+            tooltip: {{ trigger: 'item' }},
+            legend: {{ show: false }},
+            series: [{{
+                name: 'Provider',
+                type: 'pie',
+                radius: ['40%', '70%'],
+                center: ['50%', '50%'],
+                avoidLabelOverlap: false,
+                itemStyle: {{ borderRadius: 5, borderColor: '#1c1c1f', borderWidth: 2 }},
+                label: {{ show: false }},
+                data: pieData,
+                color: themeColors
+            }}]
+        }});
+
+        // 3. Radar (Capabilities)
+        const radarIndicator = {json.dumps(radar_indicator)};
+        const radarValues = {json.dumps(radar_values)};
+        const raChart = echarts.init(document.getElementById('radarChart'));
+        chartInstances['radar'] = raChart;
+        raChart.setOption({{
+            radar: {{
+                indicator: radarIndicator,
+                splitArea: {{ areaStyle: {{ color: ['#1a1a1d', '#1f1f22', '#242428', '#2a2a2e'] }} }},
+                axisLine: {{ lineStyle: {{ color: '#333' }} }},
+                splitLine: {{ lineStyle: {{ color: '#333' }} }}
+            }},
+            series: [{{
+                name: 'Budget vs spending',
+                type: 'radar',
+                data: [{{ value: radarValues, name: 'Allocated Budget' }}],
+                areaStyle: {{ color: 'rgba(139, 92, 246, 0.2)' }},
+                lineStyle: {{ color: '#8b5cf6', width: 2 }},
+                symbol: 'none'
+            }}]
+        }});
+
+        window.addEventListener('resize', () => {{
+            Object.values(chartInstances).forEach(c => c.resize());
+        }});
 
     </script>
 </body>

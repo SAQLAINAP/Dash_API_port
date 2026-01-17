@@ -2,13 +2,22 @@
 
 **The "Pro Terminal" for LLM Pricing & Intelligence.**
 
-LLM Atlas is a comprehensive dashboard and API for tracking Large Language Model (LLM) pricing, capabilities, and leaderboard rankings. It aggregates data from multiple sources to provide a unified view of the AI model landscape.
+LLM Atlas is a high-performance dashboard and API for tracking Large Language Model (LLM) pricing, capabilities, and leaderboard rankings in real-time. It uses a streaming data pipeline to provide immediate updates on the AI model landscape.
 
 ## 🚀 Key Features
-- **Real-Time Registry**: Track input/output pricing and context windows for hundreds of models.
-- **Visual Analytics**: Interactive charts for Price Correlation, Provider Market Share, and Capabilities Radar.
+- **Real-Time Streaming**: Ingestion pipeline powered by **Redis Streams** for sub-second data updates.
+- **Pro Terminal UI**: Dark-themed, responsive dashboard with interactive **ECharts** visualizations.
+- **Live Metrics**:
+    - **Header Status**: "ONLINE" pipeline indicator with real-time metadata.
+    - **Visual Analytics**: Price Correlation Scatter, Provider Market Share Pie, and Capabilities Radar.
 - **Leaderboard Integration**: Ingests rankings from LMArena.
-- **PostgreSQL Backend**: Robust data persistence with Dockerized SQL database.
+- **Robust Backend**: PostgreSQL database with Redis caching and message brokering.
+
+## 🏗️ Architecture
+The system follows a **Producer-Consumer** architecture:
+1.  **Agents (Producers)**: Scrape data and push immediately to `stream:ingestion` in Redis.
+2.  **Stream Worker (Consumer)**: A dedicated process (`stream_worker.py`) listens to the stream, normalizes data, computes semantic diffs, and updates PostgreSQL.
+3.  **Dashboard**: Generates a static HTML report from the latest DB state.
 
 ## 🛠️ Quick Start Guide
 
@@ -16,35 +25,36 @@ LLM Atlas is a comprehensive dashboard and API for tracking Large Language Model
 - Docker & Docker Compose
 - Python 3.9+
 
-### 1. Start the Database
-Launch the PostgreSQL container using Docker Compose.
+### 1. Start Infrastructure
+Launch PostgreSQL and Redis containers.
 ```bash
 docker-compose up -d
 ```
 
-### 2. Ingest Market Data
-Run the crawler to fetch the latest pricing from PricePerToken.com and populate the database.
+### 2. Start Ingestion Worker
+Start the background worker to listen for stream data.
+```bash
+python run_worker.py
+```
+
+### 3. Trigger Data Ingestion
+Run the orchestrator to trigger agents. They will push data to the stream which the worker processes.
 ```bash
 python run_ingestion.py
 ```
 
-### 3. Update Leaderboard
-Scrape the latest model rankings from LMArena (Chatbot Arena).
+### 4. Update Leaderboard
+Scrape the latest model rankings from LMArena.
 ```bash
 python app/agents/leaderboard_crawler.py
 ```
 
-### 4. Generate Dashboard
-Create the interactive HTML dashboard (`registry_report.html`) from the database.
+### 5. Generate Dashboard
+Create the interactive HTML dashboard (`registry_report.html`).
 ```bash
 python generate_visual_report.py
 ```
-
-### 5. View the Dashboard
-Open the generated report in your browser.
-- **Windows**: `start registry_report.html`
-- **Mac**: `open registry_report.html`
-- **Linux**: `xdg-open registry_report.html`
+*Open `registry_report.html` in your browser to view the Pro Terminal.*
 
 ---
 
@@ -53,11 +63,12 @@ To access the data programmatically via a REST API:
 ```bash
 uvicorn app.main:app --reload
 ```
-- Docs: http://127.0.0.1:8000/docs
-- Models Endpoint: http://127.0.0.1:8000/models
+- **Docs**: http://127.0.0.1:8000/docs
+- **Models**: http://127.0.0.1:8000/models
 
-## 📂 Project Structure
-- `app/storage/postgres.py`: Database connection and schema models.
-- `app/agents/`: Web crawlers (Playwright) for data sourcing.
-- `generate_visual_report.py`: Script to generate the single-file HTML dashboard.
-- `registry_report.html`: The output dashboard file.
+## 📂 Key Files
+- `app/ingestion/stream_worker.py`: **[NEW]** Consumer logic for Redis Streams.
+- `app/agents/`: Web crawlers (Playwright).
+- `run_ingestion.py`: Trigger script for data collection.
+- `generate_visual_report.py`: Dashboard generator (Python -> HTML/JS).
+- `docker-compose.yml`: Infrastructure definition (Postgres + Redis).
