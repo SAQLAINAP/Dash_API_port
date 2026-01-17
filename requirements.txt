@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+sqlalchemy
+psycopg2-binary
+redis
+requests
+beautifulsoup4
+playwright
+python-dotenv
+tqdm
+openai

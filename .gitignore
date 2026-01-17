@@ -1,0 +1,28 @@
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# System
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Project specific
+*.sqlite3
+*.db
+# We might want to keep the registry data as seed data, so not ignoring registry/ for now.
+# If logs are generated:
+logs/
