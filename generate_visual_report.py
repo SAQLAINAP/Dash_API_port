@@ -5,17 +5,45 @@ import random
 from datetime import datetime, timedelta
 from collections import defaultdict, Counter
 
+from sqlalchemy.orm import Session
+from app.storage.postgres import SessionLocal, Model, Leaderboard
+
 # Configuration
-REGISTRY_FILE = "registry/latest.json"
-LEADERBOARD_FILE = "registry/leaderboard.json"
 OUTPUT_FILE = "registry_report.html"
 
-def load_json(path):
-    if not os.path.exists(path):
-        print(f"Warning: {path} not found.")
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+def get_data_from_db():
+    db = SessionLocal()
+    try:
+        models = db.query(Model).all()
+        leaderboard = db.query(Leaderboard).order_by(Leaderboard.rank).all()
+        
+        registry_data = []
+        for m in models:
+            # Reconstruct Dict format expected by generator
+            data = m.config if m.config else {}
+            data['model'] = m.name
+            data['provider'] = m.provider
+            # Ensure pricing is up to date from columns if they were modified independently
+            if 'fields' not in data: data['fields'] = {}
+            if 'pricing' not in data['fields']: data['fields']['pricing'] = {'value': {}}
+            data['fields']['pricing']['value']['input'] = m.input_price
+            data['fields']['pricing']['value']['output'] = m.output_price
+            data['fields']['context_window'] = {'value': m.context_window}
+            registry_data.append(data)
+            
+        leaderboard_data = []
+        for l in leaderboard:
+            leaderboard_data.append({
+                "rank": str(l.rank),
+                "model": l.model,
+                "arena_score": str(l.arena_score),
+                "ci_95": l.ci_95,
+                "category": l.category
+            })
+            
+        return registry_data, leaderboard_data
+    finally:
+        db.close()
 
 def safe_float(val):
     try:
@@ -47,8 +75,9 @@ def get_capabilities(model_name):
 
 def generate_dashboard():
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    registry_data = load_json(REGISTRY_FILE)
-    leaderboard_data = load_json(LEADERBOARD_FILE)
+    
+    # FETCH FROM DB
+    registry_data, leaderboard_data = get_data_from_db()
     
     # --- Prepare Registry Data ---
     enriched_registry = []
@@ -178,6 +207,32 @@ def generate_dashboard():
         .m-body {{ padding: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; overflow-y: auto; }}
         .close {{ cursor: pointer; color: #aaa; font-size: 1.5rem; transition: 0.2s; }} .close:hover {{ color: #fff; }}
         
+        /* UI REFINEMENTS */
+        .panel-body::-webkit-scrollbar {{ display: none; }}
+        .panel-body {{ -ms-overflow-style: none; scrollbar-width: none; }}
+        
+        select, input.search, .tab-btn {{
+            border-radius: 20px !important;
+            padding: 8px 16px !important;
+            border: 1px solid #333 !important;
+            transition: all 0.2s ease;
+        }}
+        select:hover, input.search:focus, .tab-btn:hover {{
+            border-color: var(--primary) !important;
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.3);
+        }}
+
+        /* CHART GRID - 3 Columns */
+        .chart-row {{
+            display: grid;
+            grid-template-columns: 1fr 0.8fr 1fr;
+            gap: 1rem;
+            min-height: 280px;
+        }}
+
+        /* PROVIDER BAR (Compact) */
+        #barChart {{ height: 100%; width: 100%; }}
+
     </style>
 </head>
 <body>
@@ -200,9 +255,9 @@ def generate_dashboard():
     </header>
 
     <!-- HOME VIEW -->
-    <main id="home-view" class="view-section active">
+    <main id="home-view" class="view-section active" style="grid-template-rows: auto auto 1fr;">
         <!-- Stats -->
-        <div class="kpi-grid">
+        <div class="kpi-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 1rem;">
             <div class="kpi-box">
                 <div class="kpi-lbl">Total Index</div>
                 <div class="kpi-val">{len(registry_data)}</div>
@@ -217,23 +272,46 @@ def generate_dashboard():
             </div>
         </div>
 
-        <!-- Chart -->
-        <div class="panel">
-            <div class="panel-head">Price Distribution</div>
-            <div class="panel-body" id="scatterChart"></div>
-        </div>
+        <!-- Charts Section (3 Columns) -->
+        <div class="chart-row" style="margin-bottom: 1rem;">
+            <!-- 1. Price Distribution -->
+            <div class="panel">
+                <div class="panel-head">Price Correlation</div>
+                <div class="panel-body" id="scatterChart"></div>
+            </div>
+            
+            <!-- 2. Provider Share (Pie) -->
+            <div class="panel">
+                <div class="panel-head">Provider Share</div>
+                <div class="panel-body" id="pieChart"></div>
+            </div>
 
-        <!-- Top Providers -->
-        <div class="panel">
-            <div class="panel-head">Top Providers</div>
-            <div class="panel-body" id="barChart"></div>
+            <!-- 3. Capabilities (Radar) -->
+            <div class="panel">
+                <div class="panel-head">Capabilities Radar</div>
+                <div class="panel-body" id="radarChart"></div>
+            </div>
         </div>
 
         <!-- Registry Table -->
         <div class="panel" style="grid-column: 1 / -1;">
             <div class="panel-head">
                 <span>Real-Time Registry</span>
-                <input type="text" class="search" placeholder="Filter models..." onkeyup="filterTable(this, 'regTable')">
+                <div style="display:flex; gap:10px;">
+                    <select id="providerFilter" onchange="applyFilters()" style="background:#000; color:#fff; border:1px solid var(--border); padding:6px; border-radius:4px; outline:none; font-size:0.8rem;">
+                        <option value="all">All Providers</option>
+                        { "".join([f'<option value="{p}">{p}</option>' for p in sorted(list(providers))]) }
+                    </select>
+                    
+                    <select id="sortFilter" onchange="applyFilters()" style="background:#000; color:#fff; border:1px solid var(--border); padding:6px; border-radius:4px; outline:none; font-size:0.8rem;">
+                        <option value="name">Sort by Name</option>
+                        <option value="price_high">Price: High to Low</option>
+                        <option value="price_low">Price: Low to High</option>
+                        <option value="change_high">24h Change: High</option>
+                    </select>
+
+                    <input type="text" id="searchInput" class="search" placeholder="Filter models..." onkeyup="applyFilters()">
+                </div>
             </div>
             <div class="panel-body" style="padding:0">
                 <table id="regTable">
@@ -517,41 +595,15 @@ def generate_dashboard():
         }}
 
         // --- Init Dashboard Charts ---
-        // Scatter
+        const themeColors = ['#3b82f6', '#8b5cf6', '#10b981', '#f59e0b', '#ef4444', '#ec4899'];
+        
+        // 1. Scatter (Price)
         const scatterData = {json.dumps([[
             safe_float(m['fields']['pricing']['value'].get('input',0)),
             safe_float(m['fields']['pricing']['value'].get('output',0))
         ] for m in enriched_registry])};
 
         const scChart = echarts.init(document.getElementById('scatterChart'));
-        scChart.setOption({{
-             tooltip: {{ trigger: 'item' }},
-             grid: {{ top: 20, right: 20, bottom: 20, left: 40 }},
-             xAxis: {{ type: 'value', splitLine: {{ show: false }} }},
-             yAxis: {{ type: 'value', splitLine: {{ lineStyle: {{ color: '#333' }} }} }},
-             series: [{{ type: 'scatter', symbolSize: 6, data: scatterData, itemStyle: {{ color: '#8b5cf6' }} }}]
-        }});
-
-        // Bar
-        const provData = {json.dumps(list(Counter([m['provider'] for m in enriched_registry]).most_common(10)))};
-        const barChart = echarts.init(document.getElementById('barChart'));
-        barChart.setOption({{
-            tooltip: {{ trigger: 'axis' }},
-            grid: {{ top: 10, right: 10, bottom: 20, left: 10, containLabel: true }},
-            yAxis: {{ type: 'category', data: provData.map(x => x[0]), axisLabel: {{ color: '#aaa' }} }},
-            xAxis: {{ type: 'value', show: false }},
-            series: [{{ 
-                type: 'bar', data: provData.map(x => x[1]), 
-                itemStyle: {{ borderRadius: [0, 4, 4, 0], color: '#3b82f6' }},
-                label: {{ show: true, position: 'right', color: '#fff' }}
-            }}]
-        }});
-        
-        window.addEventListener('resize', () => {{
-            scChart.resize();
-            barChart.resize();
-            if(chartInstance) chartInstance.resize();
-        }});
 
     </script>
 </body>

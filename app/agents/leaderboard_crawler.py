@@ -98,10 +98,24 @@ class LeaderboardCrawler:
 
 
     def save_data(self):
-        os.makedirs("registry", exist_ok=True)
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2)
-        print(f"Leaderboard data saved to {OUTPUT_FILE}")
+        print(f"Saving {len(self.data)} entries to Database...")
+        try:
+            from app.storage.postgres import SessionLocal, clear_leaderboard, insert_leaderboard_entry
+            db = SessionLocal()
+            try:
+                clear_leaderboard(db)
+                for entry in self.data:
+                    insert_leaderboard_entry(db, entry)
+                db.commit()
+                print("Leaderboard saved to PostgreSQL.")
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"Error saving to DB: {e}")
+            # Optional: Fallback to JSON if DB fails?
+            # with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            #    json.dump(self.data, f, indent=2)
+            # print(f"Leaderboard saved to {OUTPUT_FILE} (Backup)")
 
 if __name__ == "__main__":
     crawler = LeaderboardCrawler()
